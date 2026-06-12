@@ -529,7 +529,7 @@ function renderPreview(){
 function rmExistente(i){formFotosExistentes.splice(i,1);renderPreview();}
 function rmNova(i){formFotosNovas.splice(i,1);renderPreview();}
 
-// Upload de foto via Apps Script (base64 → Drive)
+// Upload de foto via Apps Script usando XHR (contorna CORS do fetch)
 async function uploadFoto(file, idx, total){
   var prog=document.getElementById('upload-progress');
   prog.style.display='block';
@@ -539,17 +539,21 @@ async function uploadFoto(file, idx, total){
     reader.onload=function(e){
       var base64=e.target.result.split(',')[1];
       var filename=Date.now()+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-      fetch(SCRIPT_URL, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({base64:base64, mimeType:file.type, filename:filename})
-      })
-      .then(function(r){return r.json();})
-      .then(function(res){
-        if(res.ok) resolve(res.id);
-        else reject(new Error(res.error||'Erro no upload'));
-      })
-      .catch(reject);
+      var payload=JSON.stringify({base64:base64, mimeType:file.type, filename:filename});
+      var xhr=new XMLHttpRequest();
+      xhr.open('POST', SCRIPT_URL, true);
+      xhr.setRequestHeader('Content-Type','text/plain'); // evita preflight CORS
+      xhr.onload=function(){
+        try {
+          var res=JSON.parse(xhr.responseText);
+          if(res.ok) resolve(res.id);
+          else reject(new Error(res.error||'Erro no upload'));
+        } catch(e){ reject(new Error('Resposta inválida do servidor')); }
+      };
+      xhr.onerror=function(){ reject(new Error('Erro de conexão')); };
+      xhr.ontimeout=function(){ reject(new Error('Tempo esgotado')); };
+      xhr.timeout=60000;
+      xhr.send(payload);
     };
     reader.readAsDataURL(file);
   });
