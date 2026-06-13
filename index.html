@@ -162,9 +162,10 @@ onSnapshot(collection(db,'autores'), function(snap){
   <span id="loading-msg">Carregando fotos...</span>
 </div>
 <div id="view-bairros">
-  <div class="search-bar"><input type="text" id="s-bairro" placeholder="Buscar bairro ou autor..." oninput="buscarGlobal()" autocomplete="off"/></div>
+  <div class="search-bar"><input type="text" id="s-bairro" placeholder="Buscar bairro, autor, alcunha ou RG..." oninput="buscarGlobal()" autocomplete="off"/></div>
   <div class="section-title" id="section-label">Bairros</div>
   <div class="bairros-grid" id="grid-bairros"></div>
+  <div class="autores-grid" id="grid-busca-resultados" style="display:none;padding:0 16px 100px"></div>
 </div>
 <div id="view-autores">
   <div class="panel-header">
@@ -172,7 +173,7 @@ onSnapshot(collection(db,'autores'), function(snap){
     <span class="panel-title" id="panel-nome"></span>
     <span class="panel-count" id="panel-count"></span>
   </div>
-  <div class="search-bar"><input type="text" id="s-autor" placeholder="Buscar autor..." oninput="filtrarAutores()" autocomplete="off"/></div>
+  <div class="search-bar"><input type="text" id="s-autor" placeholder="Buscar por nome, alcunha ou RG..." oninput="filtrarAutores()" autocomplete="off"/></div>
   <div class="autores-grid" id="grid-autores"></div>
 </div>
 
@@ -254,6 +255,14 @@ onSnapshot(collection(db,'autores'), function(snap){
   <img id="lightbox-img" src="" alt=""/>
 </div>
 <div class="toast" id="toast"></div>
+
+<iframe name="upload-target" id="upload-target" style="display:none"></iframe>
+<form id="upload-form" target="upload-target" method="POST" action="REPLACE_SCRIPT_URL" style="display:none">
+  <input type="hidden" name="base64" id="upload-base64"/>
+  <input type="hidden" name="mimeType" id="upload-mime"/>
+  <input type="hidden" name="filename" id="upload-filename"/>
+</form>
+
 
 <script>
 var DADOS = JSON.parse(document.getElementById('dados-json').textContent);
@@ -384,23 +393,92 @@ window.renderAutores = function(lista){
 };
 
 function filtrarAutores(){
-  var q=document.getElementById('s-autor').value.toLowerCase();
+  var q=document.getElementById('s-autor').value.toLowerCase().trim();
   var b=DADOS[window.bairroAtual];
   var todos=b.autores.slice().concat(novosNoBairro(b.bairro));
   if(!q){window.renderAutores(todos);return;}
-  window.renderAutores(todos.filter(function(a){
-    return (a.nome||'').toLowerCase().indexOf(q)>=0||(a.alcunha||'').toLowerCase().indexOf(q)>=0||(a.rg||'').indexOf(q)>=0;
-  }));
+  window.renderAutores(todos.filter(function(a){return matchAutor(a,q);}));
 }
 
 function buscarGlobal(){
-  var q=document.getElementById('s-bairro').value.toLowerCase();
-  if(!q){renderBairros(DADOS);return;}
-  renderBairros(DADOS.filter(function(b){
-    return b.bairro.toLowerCase().indexOf(q)>=0||b.autores.some(function(a){
-      return (a.nome||'').toLowerCase().indexOf(q)>=0||(a.alcunha||'').toLowerCase().indexOf(q)>=0;
+  var q=document.getElementById('s-bairro').value.toLowerCase().trim();
+  var gridBairros=document.getElementById('grid-bairros');
+  var gridResultados=document.getElementById('grid-busca-resultados');
+  var sectionLabel=document.getElementById('section-label');
+
+  if(!q){
+    gridResultados.style.display='none';
+    gridBairros.style.display='';
+    renderBairros(DADOS);
+    return;
+  }
+
+  // Buscar autores que casem nome, alcunha ou RG em todos os bairros
+  var resultados=[];
+  DADOS.forEach(function(b,bi){
+    b.autores.forEach(function(a,ai){
+      if(matchAutor(a,q)) resultados.push({a:a, bi:bi, ref:String(ai)});
     });
-  }));
+  });
+  window.NOVOS_AUTORES.forEach(function(a){
+    if(matchAutor(a,q)){
+      var bi=DADOS.findIndex(function(b){return b.bairro===a.bairro;});
+      resultados.push({a:a, bi:bi>=0?bi:0, ref:'n:'+a.id});
+    }
+  });
+
+  if(resultados.length>0){
+    sectionLabel.textContent='Autores encontrados ('+resultados.length+')';
+    gridBairros.style.display='none';
+    gridResultados.style.display='grid';
+    renderResultadosBusca(resultados);
+  } else {
+    // Sem autores: cair para busca de bairros pelo nome
+    gridResultados.style.display='none';
+    gridBairros.style.display='';
+    renderBairros(DADOS.filter(function(b){
+      return b.bairro.toLowerCase().indexOf(q)>=0;
+    }));
+  }
+}
+
+function matchAutor(a,q){
+  return (a.nome||'').toLowerCase().indexOf(q)>=0 ||
+         (a.alcunha||'').toLowerCase().indexOf(q)>=0 ||
+         (a.rg||'').toLowerCase().indexOf(q)>=0;
+}
+
+function renderResultadosBusca(resultados){
+  document.getElementById('grid-busca-resultados').innerHTML=resultados.map(function(r){
+    var a=r.a, bi=r.bi, ci=bi%10;
+    var st=statusInfo(a);
+    var nomeClean=(a.nome||'').replace(/[⚰️⚰]/g,'').trim();
+    var ini=a.iniciais||iniciais(a.nome||'');
+    var isNovo=!!a._novo;
+    var fotoHtml='';
+    if(isNovo && a.fotos && a.fotos.length>0){
+      fotoHtml='<img src="'+imgUrl(a.fotos[0],200)+'" onerror="this.remove()" loading="lazy"/>';
+    } else if(!isNovo){
+      var ff=a.foto_files||[];
+      if(ff.length>0 && fotosCarregadas){var fid=getFid(ff[0]); if(fid) fotoHtml='<img src="'+imgUrl(fid,200)+'" onerror="this.remove()" loading="lazy"/>';}
+    }
+    var bairroNome=isNovo?a.bairro:DADOS[bi].bairro;
+    return '<div class="autor-card c'+ci+'" onclick="abrirAutorGlobal(\''+r.ref+'\','+bi+')">'+
+      (isNovo?'<span class="novo-badge">NOVO</span>':'')+
+      '<button class="edit-btn" onclick="event.stopPropagation();editarAutor(\''+r.ref+'\','+bi+')">✏️</button>'+
+      '<div class="autor-foto">'+fotoHtml+'<span class="ini">'+escH(ini)+'</span>'+((a.morto||a.status==='Falecido')?'<span class="morto-badge">⚰️</span>':'')+'</div>'+
+      '<div class="autor-body">'+
+      '<div class="autor-nome" title="'+escH(nomeClean)+'">'+escH(nomeClean)+'</div>'+
+      '<div class="autor-alcunha">'+(a.alcunha?'"'+escH(a.alcunha)+'"':escH(bairroNome))+'</div>'+
+      '<span class="status-tag '+st.cls+'">'+st.txt+'</span>'+
+      '</div></div>';
+  }).join('');
+}
+
+// Abrir autor a partir da busca global (define bairroAtual para contexto correto do modal)
+function abrirAutorGlobal(ref,bi){
+  window.bairroAtual=bi;
+  abrirAutor(ref,bi);
 }
 
 function resolverAutor(ref,bi){
@@ -529,34 +607,46 @@ function renderPreview(){
 function rmExistente(i){formFotosExistentes.splice(i,1);renderPreview();}
 function rmNova(i){formFotosNovas.splice(i,1);renderPreview();}
 
-// Upload de foto via Apps Script usando XHR (contorna CORS do fetch)
+// Upload de foto via formulário + iframe oculto (contorna limitação de redirect do Apps Script)
+function aguardar(ms){ return new Promise(function(r){setTimeout(r,ms);}); }
+
 async function uploadFoto(file, idx, total){
   var prog=document.getElementById('upload-progress');
   prog.style.display='block';
   prog.textContent='Enviando foto '+(idx+1)+' de '+total+'...';
-  return new Promise(function(resolve,reject){
+
+  var base64 = await new Promise(function(resolve,reject){
     var reader=new FileReader();
-    reader.onload=function(e){
-      var base64=e.target.result.split(',')[1];
-      var filename=Date.now()+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-      var payload=JSON.stringify({base64:base64, mimeType:file.type, filename:filename});
-      var xhr=new XMLHttpRequest();
-      xhr.open('POST', SCRIPT_URL, true);
-      xhr.setRequestHeader('Content-Type','text/plain'); // evita preflight CORS
-      xhr.onload=function(){
-        try {
-          var res=JSON.parse(xhr.responseText);
-          if(res.ok) resolve(res.id);
-          else reject(new Error(res.error||'Erro no upload'));
-        } catch(e){ reject(new Error('Resposta inválida do servidor')); }
-      };
-      xhr.onerror=function(){ reject(new Error('Erro de conexão')); };
-      xhr.ontimeout=function(){ reject(new Error('Tempo esgotado')); };
-      xhr.timeout=60000;
-      xhr.send(payload);
-    };
+    reader.onload=function(e){ resolve(e.target.result.split(',')[1]); };
+    reader.onerror=reject;
     reader.readAsDataURL(file);
   });
+
+  var filename = Date.now()+'_'+Math.random().toString(36).slice(2,8)+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+
+  document.getElementById('upload-base64').value = base64;
+  document.getElementById('upload-mime').value = file.type;
+  document.getElementById('upload-filename').value = filename;
+  document.getElementById('upload-form').action = SCRIPT_URL;
+  document.getElementById('upload-form').submit();
+
+  // Aguardar processamento no servidor (uploads grandes podem demorar)
+  prog.textContent='Processando foto '+(idx+1)+' de '+total+'... (aguarde)';
+  await aguardar(4000);
+
+  // Tentar localizar o arquivo via doGet (com tentativas)
+  for(var tentativa=0; tentativa<10; tentativa++){
+    try {
+      var r = await fetch(SCRIPT_URL+'?t='+Date.now());
+      var mapa = await r.json();
+      if(mapa[filename]){
+        FOTO_MAPA = mapa;
+        return mapa[filename];
+      }
+    } catch(e){}
+    await aguardar(1500);
+  }
+  throw new Error('Foto enviada mas não foi possível confirmar o processamento. Aguarde 1 minuto e tente salvar novamente.');
 }
 
 async function salvarAutor(){
